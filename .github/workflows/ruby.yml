@@ -1,0 +1,27 @@
+name: Ruby
+
+on:
+  pull_request:
+    branches:
+      - 'master'
+  push:
+    branches:
+      - 'master'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ruby: [ 'ruby-head' ]
+    steps:
+    - uses: actions/checkout@v2
+    - uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: ${{ matrix.ruby }}
+    - name: Bundle install
+      run: |
+        bundle install
+    - name: Run the test suite
+      run: |
+        bundle exec rake TESTOPT=-v
