@@ -57,7 +57,7 @@ Occasionally, you may want to disable the `error_highlight` gem for e.g. debuggi
 can disable it entirely by specifying `--disable-error_highlight` option to the `ruby` command:
 
 ```bash
-$ uby --disable-error_highlight -e '1.time {}'
+$ ruby --disable-error_highlight -e '1.time {}'
 -e:1:in `<main>': undefined method `time' for 1:Integer (NoMethodError)
 Did you mean?  times
 ```
