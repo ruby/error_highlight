@@ -24,4 +24,4 @@ jobs:
         bundle install
     - name: Run the test suite
       run: |
-        bundle exec rake TESTOPT=-v
+        RUBYOPT=--disable-error_highlight bundle exec rake TESTOPT=-v
