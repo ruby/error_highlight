@@ -51,6 +51,56 @@ test.rb:2:in `extract_value': undefined method `[]' for nil:NilClass (NoMethodEr
         from test.rb:5:in `<main>'
 ```
 
+## Using the `ErrorHighlight.spot`
+
+*Note: This API is experimental, may change in future.*
+
+You can use the `ErrorHighlight.spot` method to get the spnippet data.
+Note that the argument must be a RubyVM::AbstractSyntaxTree::Node object that is created with `save_script_lines: true` option (which is available since Ruby 3.1).
+
+```ruby
+class Dummy
+  def test(_dummy_arg)
+    node = RubyVM::AbstractSyntaxTree.of(caller_locations.first, save_script_lines: true)
+    ErrorHighlight.spot(node)
+  end
+end
+
+pp Dummy.new.test(42) # <- Line 8
+#           ^^^^^       <- Column 12--17
+
+#=> {:first_lineno=>8,
+#    :first_column=>12,
+#    :last_lineno=>8,
+#    :last_column=>17,
+#    :snippet=>"pp Dummy.new.test(42) # <- Line 8\n"}
+```
+
+## Custom Formatter
+
+If you want to customize the message format for code snippet, use `ErrorHighlight.formatter=` to set your custom object that responds to `message_for` method.
+
+```ruby
+formatter = Object.new
+def formatter.message_for(spot)
+  marker = " " * spot[:first_column] + "^" + "~" * (spot[:last_column] - spot[:first_column] - 1)
+
+  "\n\n#{ spot[:snippet] }#{ marker }"
+end
+
+ErrorHighlight.formatter = formatter
+
+1.time {}
+
+#=>
+#
+# test.rb:10:in `<main>': undefined method `time' for 1:Integer (NoMethodError)
+#
+# 1.time {}
+#  ^~~~~
+# Did you mean?  times
+```
+
 ## Disabling `error_highlight`
 
 Occasionally, you may want to disable the `error_highlight` gem for e.g. debugging issues in the error object itself. You
