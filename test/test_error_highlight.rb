@@ -65,6 +65,18 @@ undefined method `foo' for nil:NilClass
     end
   end
 
+  def test_CALL_noarg_4
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `foo' for nil:NilClass
+
+      (nil).foo + 1
+           ^^^^
+    END
+
+      (nil).foo + 1
+    end
+  end
+
   def test_CALL_arg_1
     assert_error_message(NoMethodError, <<~END) do
 undefined method `foo' for nil:NilClass
@@ -221,6 +233,18 @@ undefined method `[]' for #{ v.inspect }
     end
   end
 
+  def test_CALL_aref_5
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `[]' for nil:NilClass
+
+      (nil)[ ]
+           ^^^
+    END
+
+      (nil)[ ]
+    end
+  end
+
   def test_CALL_aset
     assert_error_message(NoMethodError, <<~END) do
 undefined method `[]=' for nil:NilClass
@@ -312,6 +336,30 @@ undefined method `foo=' for nil:NilClass
     end
   end
 
+  def test_ATTRASGN_4
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `[]=' for nil:NilClass
+
+      (nil)[0] = 42
+           ^^^^^
+    END
+
+      (nil)[0] = 42
+    end
+  end
+
+  def test_ATTRASGN_5
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `foo=' for nil:NilClass
+
+      (nil).foo = 42
+           ^^^^^^
+    END
+
+      (nil).foo = 42
+    end
+  end
+
   def test_OPCALL_binary_1
     assert_error_message(NoMethodError, <<~END) do
 undefined method `+' for nil:NilClass
@@ -337,7 +385,19 @@ undefined method `+' for nil:NilClass
     end
   end
 
-  def test_OPCALL_unary
+  def test_OPCALL_binary_3
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `+' for nil:NilClass
+
+      (nil) + 42
+            ^
+    END
+
+      (nil) + 42
+    end
+  end
+
+  def test_OPCALL_unary_1
     assert_error_message(NoMethodError, <<~END) do
 undefined method `+@' for nil:NilClass
 
@@ -346,6 +406,18 @@ undefined method `+@' for nil:NilClass
     END
 
       + nil
+    end
+  end
+
+  def test_OPCALL_unary_2
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `+@' for nil:NilClass
+
+      +(nil)
+      ^
+    END
+
+      +(nil)
     end
   end
 
@@ -428,6 +500,20 @@ undefined method `[]' for nil:NilClass
     end
   end
 
+  def test_OP_ASGN1_aref_4
+    v = nil
+
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `[]' for nil:NilClass
+
+      (v)[0] += 42
+         ^^^
+    END
+
+      (v)[0] += 42
+    end
+  end
+
   def test_OP_ASGN1_op_1
     v = Object.new
     def v.[](x); nil; end
@@ -471,6 +557,21 @@ undefined method `+' for nil:NilClass
         0
       ] +=
         42
+    end
+  end
+
+  def test_OP_ASGN1_op_4
+    v = Object.new
+    def v.[](x); nil; end
+
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `+' for nil:NilClass
+
+      (v)[0] += 42
+             ^
+    END
+
+      (v)[0] += 42
     end
   end
 
@@ -520,6 +621,21 @@ undefined method `[]=' for #{ v.inspect }
     end
   end
 
+  def test_OP_ASGN1_aset_4
+    v = Object.new
+    def v.[](x); 1; end
+
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `[]=' for #{ v.inspect }
+
+      (v)[0] += 42
+         ^^^^^^
+    END
+
+      (v)[0] += 42
+    end
+  end
+
   def test_OP_ASGN2_read_1
     v = nil
 
@@ -546,6 +662,20 @@ undefined method `foo' for nil:NilClass
 
       v.foo += # comment
         42
+    end
+  end
+
+  def test_OP_ASGN2_read_3
+    v = nil
+
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `foo' for nil:NilClass
+
+      (v).foo += 42
+         ^^^^
+    END
+
+      (v).foo += 42
     end
   end
 
@@ -580,6 +710,21 @@ undefined method `+' for nil:NilClass
     end
   end
 
+  def test_OP_ASGN2_op_3
+    v = Object.new
+    def v.foo; nil; end
+
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `+' for nil:NilClass
+
+      (v).foo += 42
+              ^
+    END
+
+      (v).foo += 42
+    end
+  end
+
   def test_OP_ASGN2_write_1
     v = Object.new
     def v.foo; 1; end
@@ -608,6 +753,21 @@ undefined method `foo=' for #{ v.inspect }
 
       v.foo += # comment
         42
+    end
+  end
+
+  def test_OP_ASGN2_write_3
+    v = Object.new
+    def v.foo; 1; end
+
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `foo=' for #{ v.inspect }
+
+      (v).foo += 42
+         ^^^^^^^
+    END
+
+      (v).foo += 42
     end
   end
 
