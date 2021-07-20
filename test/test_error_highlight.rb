@@ -25,7 +25,7 @@ class ErrorHighlightTest < Test::Unit::TestCase
 
   def assert_error_message(klass, expected_msg, &blk)
     err = assert_raise(klass, &blk)
-    assert_equal(expected_msg.chomp, err.message)
+    assert_equal(expected_msg.chomp, err.to_s)
   end
 
   def test_CALL_noarg_1
@@ -1016,6 +1016,13 @@ _ _ ^^^^^
         load tmp.path
       end
     end
+  end
+
+  def test_message
+    error = assert_raises NoMethodError do
+      nil.foo
+    end
+    assert_equal "undefined method `foo' for nil:NilClass", error.message
   end
 
   def test_no_final_newline

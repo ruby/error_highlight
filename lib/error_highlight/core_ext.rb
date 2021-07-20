@@ -8,6 +8,11 @@ module ErrorHighlight
     SKIP_TO_S_FOR_SUPER_LOOKUP = true
     private_constant :SKIP_TO_S_FOR_SUPER_LOOKUP
 
+    def self.apply(error_class)
+      error_class.alias_method(:message, :to_s)
+      error_class.prepend(self)
+    end
+
     def to_s
       msg = super.dup
 
@@ -41,10 +46,10 @@ module ErrorHighlight
     end
   end
 
-  NameError.prepend(CoreExt)
+  CoreExt.apply(NameError)
 
   # The extension for TypeError/ArgumentError is temporarily disabled due to many test failures
 
-  #TypeError.prepend(CoreExt)
-  #ArgumentError.prepend(CoreExt)
+  # CoreExt.apply(TypeError)
+  # CoreExt.apply(ArgumentError)
 end
