@@ -14,12 +14,11 @@ module ErrorHighlight
   end
 
   def self.formatter
-    @@formatter
+    return Ractor.current[:__ErrorHighlight_formatter__] ||= DefaultFormatter.new
   end
 
   def self.formatter=(formatter)
-    @@formatter = formatter
+    Ractor.current[:__ErrorHighlight_formatter__] = formatter
   end
 
-  self.formatter = DefaultFormatter.new
 end
