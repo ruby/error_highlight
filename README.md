@@ -29,7 +29,7 @@ def extract_value(data)
 end
 ```
 
-When `data` is `{ :results => [] }`, the following error messsage is shown:
+When `data` is `{ :results => [] }`, the following error message is shown:
 
 ```
 $ ruby test.rb
