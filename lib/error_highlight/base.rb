@@ -409,7 +409,7 @@ module ErrorHighlight
     #      ^^^^^
     def spot_colon2
       nd_parent, const = @node.children
-      if nd_parent.last_lineno == @node.last_lineno
+      if nd_parent&.last_lineno == @node.last_lineno
         fetch_line(nd_parent.last_lineno)
         @beg_column = nd_parent.last_column
         @end_column = @node.last_column
