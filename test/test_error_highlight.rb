@@ -5,7 +5,7 @@ require "tempfile"
 
 class ErrorHighlightTest < Test::Unit::TestCase
   class DummyFormatter
-    def message_for(corrections)
+    def self.message_for(corrections)
       ""
     end
   end
@@ -13,7 +13,7 @@ class ErrorHighlightTest < Test::Unit::TestCase
   def setup
     if defined?(DidYouMean)
       @did_you_mean_old_formatter = DidYouMean.formatter
-      DidYouMean.formatter = DummyFormatter.new
+      DidYouMean.formatter = DummyFormatter
     end
   end
 
@@ -1192,6 +1192,18 @@ undefined method `time' for 1:Integer
 
         load tmp.path
       end
+    end
+  end
+
+  def test_simulate_funcallv_from_embedded_ruby
+    assert_error_message(NoMethodError, <<~END) do
+undefined method `foo' for nil:NilClass
+    END
+
+      nil.foo + 1
+    rescue NoMethodError => exc
+      def exc.backtrace_locations = []
+      raise
     end
   end
 

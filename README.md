@@ -29,7 +29,7 @@ def extract_value(data)
 end
 ```
 
-When `data` is `{ :results => [] }`, the following error messsage is shown:
+When `data` is `{ :results => [] }`, the following error message is shown:
 
 ```
 $ ruby test.rb
@@ -55,7 +55,7 @@ test.rb:2:in `extract_value': undefined method `[]' for nil:NilClass (NoMethodEr
 
 *Note: This API is experimental, may change in future.*
 
-You can use the `ErrorHighlight.spot` method to get the spnippet data.
+You can use the `ErrorHighlight.spot` method to get the snippet data.
 Note that the argument must be a RubyVM::AbstractSyntaxTree::Node object that is created with `keep_script_lines: true` option (which is available since Ruby 3.1).
 
 ```ruby
