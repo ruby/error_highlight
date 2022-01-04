@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        ruby: [ 'ruby-head' ]
+        ruby: [ 'ruby-head', '3.1' ]
     steps:
     - uses: actions/checkout@v2
     - uses: ruby/setup-ruby@v1
