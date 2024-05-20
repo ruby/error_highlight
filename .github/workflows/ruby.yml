@@ -32,3 +32,15 @@ jobs:
     - name: Run the test suite
       run: |
         RUBYOPT=--disable-error_highlight bundle exec rake TESTOPT=-v
+
+  prism:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: head
+        bundler-cache: true
+    - name: Run the test suite
+      run: |
+        RUBYOPT="--disable-error_highlight --parser=prism" bundle exec rake TESTOPT=-v
