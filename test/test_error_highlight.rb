@@ -1417,6 +1417,18 @@ undefined method `timessssssssssssssssssssssssssssssssssssssssssssssssssssssssss
     end
   end
 
+  def test_errors_on_application_code_instead_of_gems
+    assert_error_message(TypeError, <<~END) do
+no implicit conversion of nil into String (TypeError)
+
+      JSON.parse(nil)
+                 ^^^
+    END
+      require "json"
+      JSON.parse(nil)
+    end
+  end
+
   def test_simulate_funcallv_from_embedded_ruby
     assert_error_message(NoMethodError, <<~END) do
 undefined method `foo' for #{ NIL_RECV_MESSAGE }
