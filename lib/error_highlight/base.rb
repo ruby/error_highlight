@@ -46,7 +46,14 @@ module ErrorHighlight
         locs = exc.backtrace_locations
         return nil unless locs
 
-        loc = locs.first
+        # Get only the base installation path from each 'Gem.path', so gem paths
+        # from the standard library are also considered.
+        gem_paths = defined?(Gem) ? Gem.path.map { |path| path.split("gems").first } : []
+
+        loc = locs.find do |loc|
+          gem_paths.none? { |path| loc.to_s.start_with?(path) }
+        end || locs.first
+
         return nil unless loc
 
         opts[:name] = exc.name if NameError === obj
