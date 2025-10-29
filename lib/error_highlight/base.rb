@@ -349,7 +349,7 @@ module ErrorHighlight
       nd_recv, mid, nd_args = @node.children
       lineno = nd_recv.last_lineno
       lines = @fetch[lineno, @node.last_lineno]
-      if mid == :[] && lines.match(/\G[\s)]*(\[(?:\s*\])?)/, nd_recv.last_column)
+      if match_bracket_call(lines, mid, nd_recv.last_column)
         @beg_column = $~.begin(1)
         @snippet = lines[/.*\n/]
         @beg_lineno = @end_lineno = lineno
@@ -362,7 +362,7 @@ module ErrorHighlight
             @end_column = $~.end(0)
           end
         end
-      elsif lines.match(/\G[\s)]*?(\&?\.)(\s*?)(#{ Regexp.quote(mid) }).*\n/, nd_recv.last_column)
+      elsif match_method_call(lines, mid, nd_recv.last_column)
         lines = $` + $&
         @beg_column = $~.begin($2.include?("\n") ? 3 : 1)
         @end_column = $~.end(3)
@@ -375,12 +375,46 @@ module ErrorHighlight
           @snippet = lines
           @beg_lineno = @end_lineno = lineno
         end
-      elsif mid.to_s =~ /\A\W+\z/ && lines.match(/\G\s*(#{ Regexp.quote(mid) })=.*\n/, nd_recv.last_column)
+      elsif match_operator_call(lines, mid, nd_recv.last_column)
         @snippet = $` + $&
         @beg_lineno = @end_lineno = lineno
         @beg_column = $~.begin(1)
         @end_column = $~.end(1)
       end
+    end
+
+    def match_bracket_call(lines, method_name, start_column)
+      return nil unless method_name == :[]
+
+      pattern = /
+        \G[\s)]*        # Optional spaces or closing parens
+        (\[(?:\s*\])?)  # The '[' with optional whitespace and closing ']'
+      /x
+
+      lines.match(pattern, start_column)
+    end
+
+    def match_method_call(lines, method_name, start_column)
+      pattern = /
+        \G[\s)]*?         # Optional spaces or closing parens
+        (\&?\.)           # '.' or '&.' operator
+        (\s*?)            # Optional spaces after the dot
+        (#{Regexp.quote(method_name)}) # The method name itself
+        .*\n              # Rest of the line
+      /x
+      lines.match(pattern, start_column)
+    end
+
+    def match_operator_call(lines, operator_name, start_column)
+      return nil unless operator_name.to_s =~ /\A\W+\z/
+
+      pattern = /
+        \G\s*                     # Optional leading spaces
+        (#{Regexp.quote(operator_name)}) # The operator symbol
+        =.*\n                     # Followed by '=' and rest of line
+      /x
+
+      lines.match(pattern, start_column)
     end
 
     # Example:
