@@ -1085,10 +1085,11 @@ nil can't be coerced into Integer (TypeError)
     end
   end
 
+  OF_NIL_INTO_INTEGER = RUBY_VERSION < "4.1." ? "from nil to integer" : "of nil into Integer"
   def test_args_CALL_2
     v = []
     assert_error_message(TypeError, <<~END) do
-no implicit conversion from nil to integer (TypeError)
+no implicit conversion #{OF_NIL_INTO_INTEGER} (TypeError)
 
       v[nil]
         ^^^
@@ -1115,7 +1116,7 @@ undefined method `[]=' for #{ recv }
   def test_args_ATTRASGN_2
     v = []
     assert_error_message(TypeError, <<~END) do
-no implicit conversion from nil to integer (TypeError)
+no implicit conversion #{OF_NIL_INTO_INTEGER} (TypeError)
 
       v [nil] = 1
          ^^^^^^^^
@@ -1177,7 +1178,7 @@ no implicit conversion of Symbol into String (TypeError)
     v = []
 
     assert_error_message(TypeError, <<~END) do
-no implicit conversion from nil to integer (TypeError)
+no implicit conversion #{OF_NIL_INTO_INTEGER} (TypeError)
 
       v [nil] += 42
          ^^^^^^^^^^
@@ -1749,6 +1750,100 @@ missing keywords: :shop_id, :param1 (ArgumentError)
 
       SingletonMethodMultipleKwargs.run
     end
+  end
+
+  def assert_isolation_error_message(expected_msg, &blk)
+    omit unless Exception.method_defined?(:detailed_message)
+    err = assert_raise(Ractor::IsolationError, &blk)
+    spot = ErrorHighlight.spot(err)
+    if spot
+      assert_kind_of(Integer, spot[:first_lineno])
+      assert_kind_of(Integer, spot[:first_column])
+      assert_kind_of(Integer, spot[:last_lineno])
+      assert_kind_of(Integer, spot[:last_column])
+      assert_kind_of(String, spot[:snippet])
+      assert_kind_of(Array, spot[:script_lines])
+    end
+    assert_equal(expected_msg.chomp, err.detailed_message(highlight: false))
+  end
+
+  def test_isolation_error_outer_variable_highlighted
+    err = assert_raise(Ractor::IsolationError) do
+      channel = 123
+      Ractor.new(channel) do
+        channel + 1
+      end
+    end
+    spot = ErrorHighlight.spot(err)
+    assert_not_nil spot
+    assert_equal "channel", spot[:snippet][spot[:first_column]...spot[:last_column]]
+  end
+
+  def test_isolation_error_multiple_outer_variables
+    err = assert_raise(Ractor::IsolationError) do
+      a = 1
+      b = 2
+      Ractor.new { a + b }
+    end
+    spot = ErrorHighlight.spot(err)
+    assert_not_nil spot
+    # Should highlight one of the outer variables (first found in the block)
+    highlighted = spot[:snippet][spot[:first_column]...spot[:last_column]]
+    assert_include ["a", "b"], highlighted
+  end
+
+  def test_isolation_error_yield_highlighted
+    err = assert_raise(Ractor::IsolationError) do
+      Ractor.new { yield }
+    end
+    spot = ErrorHighlight.spot(err)
+    assert_not_nil spot
+    assert_equal "yield", spot[:snippet][spot[:first_column]...spot[:last_column]]
+  end
+
+  def test_isolation_error_shareable_proc_unshareable
+    err = assert_raise(Ractor::IsolationError) do
+      foo = []
+      Ractor.shareable_proc { foo }
+    end
+    spot = ErrorHighlight.spot(err)
+    assert_not_nil spot
+    assert_equal "foo", spot[:snippet][spot[:first_column]...spot[:last_column]]
+  end
+
+  def test_isolation_error_shareable_proc_reassigned
+    err = assert_raise(Ractor::IsolationError) do
+      x = 123
+      Ractor.shareable_proc { x }
+      x = 456
+    end
+    spot = ErrorHighlight.spot(err)
+    assert_not_nil spot
+    assert_equal "x", spot[:snippet][spot[:first_column]...spot[:last_column]]
+  end
+
+  def test_isolation_error_detailed_message_includes_snippet
+    err = assert_raise(Ractor::IsolationError) do
+      channel = 123
+      Ractor.new(channel) do
+        channel + 1
+      end
+    end
+    msg = err.detailed_message(highlight: false)
+    assert_match(/channel/, msg)
+    assert_match(/\^{7}/, msg)
+  end
+
+  def test_isolation_error_without_outer_variables_falls_back
+    err = assert_raise(Ractor::IsolationError) do
+      raise Ractor::IsolationError, "some isolation error"
+    end
+    assert_equal [], err.outer_variables
+    assert_equal false, err.yield_called
+    # Should fall back to the default Spotter path (highlights "raise")
+    spot = ErrorHighlight.spot(err)
+    assert_not_nil spot
+    assert_equal "raise", spot[:snippet][spot[:first_column]...spot[:last_column]]
   end
 
   private
