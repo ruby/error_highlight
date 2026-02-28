@@ -65,6 +65,13 @@ module ErrorHighlight
           prism_find(loc)
         end
 
+      # For Ractor::IsolationError, highlight the outer variable usage
+      # inside the block rather than the method call or its arguments.
+      if Ractor::IsolationError === exc && !opts[:backtrace_location]
+        result = spot_isolation_error(exc, node)
+        return result if result
+      end
+
       Spotter.new(node, **opts).spot
 
     when RubyVM::AbstractSyntaxTree::Node, Prism::Node
@@ -95,6 +102,156 @@ module ErrorHighlight
   end
 
   private_class_method :prism_find
+
+  # For Ractor::IsolationError, highlight the outer variable usage or yield
+  # inside the block rather than the method call or its arguments. This
+  # provides a more helpful highlight that points to the actual cause.
+  #
+  # Supports both Prism AST nodes and legacy RubyVM::AbstractSyntaxTree nodes.
+  def self.spot_isolation_error(exc, node)
+    return nil unless node
+
+    outer_vars = begin; exc.outer_variables; rescue; []; end
+    yield_called = begin; exc.yield_called; rescue; false; end
+
+    # Nothing to highlight if there are no outer variables and yield wasn't called
+    return nil if outer_vars.empty? && !yield_called
+
+    block_body = find_block_body(node)
+    return nil unless block_body
+
+    # Search the block body for the first matching node:
+    # prefer outer variable reads, fall back to yield
+    target = nil
+
+    unless outer_vars.empty?
+      var_names = outer_vars.map { |v| v.respond_to?(:to_sym) ? v.to_sym : v.to_s.to_sym }
+      target = find_first_matching_variable(block_body, var_names)
+    end
+
+    if target.nil? && yield_called
+      target = find_first_yield(block_body)
+    end
+
+    return nil unless target
+
+    build_spot(target, node.script_lines)
+  rescue
+    nil
+  end
+
+  private_class_method :spot_isolation_error
+
+  # Navigate from a call/block node to find the block body.
+  # Handles both Prism and legacy AST node types.
+  def self.find_block_body(node)
+    case node.type
+    when :call_node    then node.block&.body   # Prism
+    when :block_node   then node.body          # Prism
+    when :ITER                                 # Legacy AST
+      _fcall, scope = node.children
+      scope
+    end
+  end
+
+  private_class_method :find_block_body
+
+  # Recursively search an AST subtree for the first local variable read
+  # matching one of the given names.
+  #
+  # Prism: matches :local_variable_read_node
+  # Legacy AST: matches :LVAR and :DVAR nodes
+  def self.find_first_matching_variable(node, var_names)
+    case node.type
+    when :local_variable_read_node             # Prism
+      return node if var_names.include?(node.name)
+    when :LVAR, :DVAR                          # Legacy AST
+      return node if var_names.include?(node.children.first)
+    end
+
+    ast_each_child(node) do |child|
+      result = find_first_matching_variable(child, var_names)
+      return result if result
+    end
+
+    nil
+  end
+
+  private_class_method :find_first_matching_variable
+
+  # Recursively search an AST subtree for the first yield node.
+  #
+  # Prism: matches :yield_node
+  # Legacy AST: matches :YIELD node
+  def self.find_first_yield(node)
+    case node.type
+    when :yield_node, :YIELD                   # Prism / Legacy AST
+      return node
+    end
+
+    ast_each_child(node) do |child|
+      result = find_first_yield(child)
+      return result if result
+    end
+
+    nil
+  end
+
+  private_class_method :find_first_yield
+
+  # Iterate over child nodes of either a Prism node or a legacy AST node.
+  def self.ast_each_child(node)
+    if node.is_a?(RubyVM::AbstractSyntaxTree::Node)
+      node.children.each do |child|
+        yield child if child.is_a?(RubyVM::AbstractSyntaxTree::Node)
+      end
+    else
+      node.child_nodes&.each do |child|
+        yield child if child
+      end
+    end
+  end
+
+  private_class_method :ast_each_child
+
+  # Build a spot hash from an AST node and script_lines.
+  # Handles both Prism nodes (which use .location) and legacy AST nodes
+  # (which have .first_lineno/.first_column/.last_lineno/.last_column directly).
+  def self.build_spot(node, lines)
+    if node.is_a?(RubyVM::AbstractSyntaxTree::Node)
+      first_lineno = node.first_lineno
+      first_column = node.first_column
+      last_lineno  = node.last_lineno
+      last_column  = node.last_column
+    else
+      loc = node.location
+      first_lineno = loc.start_line
+      first_column = loc.start_column
+      last_lineno  = loc.end_line
+      last_column  = loc.end_column
+    end
+
+    return nil unless first_lineno == last_lineno
+    return nil unless lines
+
+    snippet = lines[first_lineno - 1]
+    return nil unless snippet
+    snippet = snippet.chomp + "\n"
+
+    # Reject non-ASCII snippets (same limitation as Spotter)
+    return nil unless snippet.ascii_only?
+
+    {
+      first_lineno: first_lineno,
+      first_column: first_column,
+      last_lineno: last_lineno,
+      last_column: last_column,
+      snippet: snippet,
+      script_lines: lines,
+    }
+  end
+
+  private_class_method :build_spot
 
   class Spotter
     class NonAscii < Exception; end
