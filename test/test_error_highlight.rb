@@ -1443,28 +1443,14 @@ undefined method `foo' for #{ NIL_RECV_MESSAGE }
     end
   end
 
-  begin
-    ->{}.call(1)
-  rescue ArgumentError => exc
-    MethodDefLocationSupported =
-      RubyVM::AbstractSyntaxTree.respond_to?(:node_id_for_backtrace_location) &&
-      RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location(exc.backtrace_locations.first)
-  end
-
-  def process_callee_snippet(str)
-    return str if MethodDefLocationSupported
-
-    str.sub(/\n +\|.*\n +\^+\n\z/, "")
-  end
-
-  WRONG_NUMBER_OF_ARGUMENTS_LINENO = __LINE__ + 1
+  WRONG_NUMBER_OF_ARGUMENTS_LINENO = 1447
   def wrong_number_of_arguments_test(x, y)
     x + y
   end
 
   def test_wrong_number_of_arguments_for_method
     lineno = __LINE__
-    assert_error_message(ArgumentError, process_callee_snippet(<<~END)) do
+    assert_error_message(ArgumentError, <<~END) do
 wrong number of arguments (given 1, expected 2) (ArgumentError)
 
     caller: #{ __FILE__ }:#{ lineno + 12 }
@@ -1486,7 +1472,7 @@ wrong number of arguments (given 1, expected 2) (ArgumentError)
 
   def test_missing_keyword
     lineno = __LINE__
-    assert_error_message(ArgumentError, process_callee_snippet(<<~END)) do
+    assert_error_message(ArgumentError, <<~END) do
 missing keyword: :kw3 (ArgumentError)
 
     caller: #{ __FILE__ }:#{ lineno + 12 }
@@ -1503,7 +1489,7 @@ missing keyword: :kw3 (ArgumentError)
 
   def test_missing_keywords # multiple missing keywords
     lineno = __LINE__
-    assert_error_message(ArgumentError, process_callee_snippet(<<~END)) do
+    assert_error_message(ArgumentError, <<~END) do
 missing keywords: :kw2, :kw3 (ArgumentError)
 
     caller: #{ __FILE__ }:#{ lineno + 12 }
@@ -1520,7 +1506,7 @@ missing keywords: :kw2, :kw3 (ArgumentError)
 
   def test_unknown_keyword
     lineno = __LINE__
-    assert_error_message(ArgumentError, process_callee_snippet(<<~END)) do
+    assert_error_message(ArgumentError, <<~END) do
 unknown keyword: :kw4 (ArgumentError)
 
     caller: #{ __FILE__ }:#{ lineno + 12 }
@@ -1537,7 +1523,7 @@ unknown keyword: :kw4 (ArgumentError)
 
   def test_unknown_keywords
     lineno = __LINE__
-    assert_error_message(ArgumentError, process_callee_snippet(<<~END)) do
+    assert_error_message(ArgumentError, <<~END) do
 unknown keywords: :kw4, :kw5 (ArgumentError)
 
     caller: #{ __FILE__ }:#{ lineno + 12 }
@@ -1563,7 +1549,7 @@ unknown keywords: :kw4, :kw5 (ArgumentError)
 
   def test_wrong_number_of_arguments_for_method2
     lineno = __LINE__
-    assert_error_message(ArgumentError, process_callee_snippet(<<~END)) do
+    assert_error_message(ArgumentError, <<~END) do
 wrong number of arguments (given 1, expected 3) (ArgumentError)
 
     caller: #{ __FILE__ }:#{ lineno + 12 }
@@ -1581,7 +1567,7 @@ wrong number of arguments (given 1, expected 3) (ArgumentError)
   def test_wrong_number_of_arguments_for_lambda_literal
     v = -> {}
     lineno = __LINE__
-    assert_error_message(ArgumentError, process_callee_snippet(<<~END)) do
+    assert_error_message(ArgumentError, <<~END) do
 wrong number of arguments (given 1, expected 0) (ArgumentError)
 
     caller: #{ __FILE__ }:#{ lineno + 12 }
@@ -1599,7 +1585,7 @@ wrong number of arguments (given 1, expected 0) (ArgumentError)
   def test_wrong_number_of_arguments_for_lambda_method
     v = lambda { }
     lineno = __LINE__
-    assert_error_message(ArgumentError, process_callee_snippet(<<~END)) do
+    assert_error_message(ArgumentError, <<~END) do
 wrong number of arguments (given 1, expected 0) (ArgumentError)
 
     caller: #{ __FILE__ }:#{ lineno + 12 }
@@ -1621,7 +1607,7 @@ wrong number of arguments (given 1, expected 0) (ArgumentError)
 
   def test_wrong_number_of_arguments_for_define_method
     lineno = __LINE__
-    assert_error_message(ArgumentError, process_callee_snippet(<<~END)) do
+    assert_error_message(ArgumentError, <<~END) do
 wrong number of arguments (given 1, expected 2) (ArgumentError)
 
     caller: #{ __FILE__ }:#{ lineno + 12 }
@@ -1682,26 +1668,24 @@ wrong number of arguments (given 1, expected 2) (ArgumentError)
   end
 
   def test_spot_with_node
-    omit unless RubyVM::AbstractSyntaxTree.respond_to?(:node_id_for_backtrace_location)
+    require "prism"
+    result = Prism.parse("1.time {}")
+    node = result.value.breadth_first_search { |n| n.is_a?(Prism::CallNode) && n.name == :time }
+    spot = ErrorHighlight.spot(node)
+    assert_equal(1, spot[:first_lineno])
+    assert_equal(1, spot[:first_column])
+    assert_equal(6, spot[:last_column])
+    assert_equal(".time", spot[:snippet][spot[:first_column]...spot[:last_column]])
+  end
 
-    # We can't revisit instruction sequences to find node ids if the prism
-    # compiler was used instead of the parse.y compiler. In that case, we'll
-    # omit some tests.
-    omit if RubyVM::InstructionSequence.compile("").to_a[4][:parser] == :prism
-
-    begin
-      raise_name_error
-    rescue NameError => exc
-    end
-
-    bl = exc.backtrace_locations.first
-    expected_spot = ErrorHighlight.spot(exc, backtrace_location: bl)
-    ast = RubyVM::AbstractSyntaxTree.parse_file(__FILE__, keep_script_lines: true)
-    node_id = RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location(bl)
-    node = find_node_by_id(ast, node_id)
-    actual_spot = ErrorHighlight.spot(node)
-
-    assert_equal expected_spot, actual_spot
+  def test_load_without_rubyvm
+    res = system(
+      RbConfig.ruby,
+      "-Ilib",
+      "-e",
+      "Object.send(:remove_const, :RubyVM) if defined?(RubyVM); require 'error_highlight'"
+    )
+    assert(res)
   end
 
   module SingletonMethodWithSpacing
@@ -1713,7 +1697,7 @@ wrong number of arguments (given 1, expected 2) (ArgumentError)
 
   def test_singleton_method_with_spacing_missing_keyword
     lineno = __LINE__
-    assert_error_message(ArgumentError, process_callee_snippet(<<~END)) do
+    assert_error_message(ArgumentError, <<~END) do
 missing keyword: :x (ArgumentError)
 
     caller: #{ __FILE__ }:#{ lineno + 12 }
@@ -1737,7 +1721,7 @@ missing keyword: :x (ArgumentError)
 
   def test_singleton_method_multiple_missing_keywords
     lineno = __LINE__
-    assert_error_message(ArgumentError, process_callee_snippet(<<~END)) do
+    assert_error_message(ArgumentError, <<~END) do
 missing keywords: :shop_id, :param1 (ArgumentError)
 
     caller: #{ __FILE__ }:#{ lineno + 12 }
@@ -1752,17 +1736,190 @@ missing keywords: :shop_id, :param1 (ArgumentError)
     end
   end
 
-  private
+  def test_regression_nested_c_method_in_block
+    assert_error_message(TypeError, <<~END) do
+nil can't be coerced into Integer (TypeError)
 
-  def find_node_by_id(node, node_id)
-    return node if node.node_id == node_id
+      [1].each { |x| x + nil }
+                         ^^^
+    END
+      [1].each { |x| x + nil }
+    end
+  end
 
-    node.children.each do |child|
-      next unless child.is_a?(RubyVM::AbstractSyntaxTree::Node)
-      found = find_node_by_id(child, node_id)
-      return found if found
+  def test_regression_proc_to_proc_c_method
+    v = :+.to_proc
+    assert_error_message(TypeError, <<~END) do
+nil can't be coerced into Integer (TypeError)
+
+      v.call(1, nil)
+             ^^^^^^
+    END
+      v.call(1, nil)
+    end
+  end
+
+  def test_regression_non_first_backtrace_location
+    lineno = __LINE__
+    begin
+      1 + nil
+    rescue TypeError => exc
+    end
+    spot = ErrorHighlight.spot(exc, backtrace_location: exc.backtrace_locations[0])
+    assert_equal(lineno + 2, spot[:first_lineno])
+  end
+
+  def test_name_error_with_backtrace_location_disambiguation
+    lineno = __LINE__
+    begin
+      nonexistent_foo; nonexistent_bar
+    rescue NameError => exc
     end
 
-    return false
+    spot = ErrorHighlight.spot(exc, backtrace_location: exc.backtrace_locations.first)
+    assert_not_nil(spot)
+    assert_equal(lineno + 2, spot[:first_lineno])
+    assert_equal(6, spot[:first_column])
+    assert_equal(21, spot[:last_column])
+    assert_equal("      nonexistent_foo; nonexistent_bar\n", spot[:snippet])
   end
+
+  def test_multi_call_on_same_line_disambiguation
+    lineno = __LINE__
+    begin
+      nil.foo; nil.foo
+    rescue NoMethodError => exc
+    end
+
+    spot = ErrorHighlight.spot(exc)
+    assert_not_nil(spot)
+    assert_equal(lineno + 2, spot[:first_lineno])
+    assert_equal(9, spot[:first_column])
+    assert_equal(13, spot[:last_column])
+    assert_equal("      nil.foo; nil.foo\n", spot[:snippet])
+  end
+
+  def test_same_line_operator_args_disambiguation
+    lineno = __LINE__
+    begin
+      1 + 2; 1 + nil
+    rescue TypeError => exc
+    end
+
+    spot = ErrorHighlight.spot(exc)
+    assert_not_nil(spot)
+    assert_equal(lineno + 2, spot[:first_lineno])
+    assert_equal("nil", spot[:snippet][spot[:first_column]...spot[:last_column]])
+  end
+
+  def test_instance_variable_operator_write
+    lineno = __LINE__
+    begin
+      @error_highlight_operator_write = nil
+      @error_highlight_operator_write += 1
+    rescue NoMethodError => exc
+    ensure
+      remove_instance_variable(:@error_highlight_operator_write) if instance_variable_defined?(:@error_highlight_operator_write)
+    end
+
+    spot = ErrorHighlight.spot(exc)
+    assert_not_nil(spot)
+    assert_equal(lineno + 3, spot[:first_lineno])
+    assert_equal("+", spot[:snippet][spot[:first_column]...spot[:last_column]])
+  end
+
+  def test_global_variable_operator_write
+    lineno = __LINE__
+    begin
+      $error_highlight_operator_write = nil
+      $error_highlight_operator_write += 1
+    rescue NoMethodError => exc
+    ensure
+      $error_highlight_operator_write = nil
+    end
+
+    spot = ErrorHighlight.spot(exc)
+    assert_not_nil(spot)
+    assert_equal(lineno + 3, spot[:first_lineno])
+    assert_equal("+", spot[:snippet][spot[:first_column]...spot[:last_column]])
+  end
+
+  def test_bare_constant_operator_write
+    Tempfile.create(["error_highlight_test", ".rb"], binmode: true) do |tmp|
+      tmp.write <<~RUBY
+        begin
+          NotDefinedOperatorWrite += 1
+        rescue NameError => exc
+          $error_highlight_test_spot = ErrorHighlight.spot(exc)
+        end
+      RUBY
+      tmp.close
+
+      load tmp.path
+      spot = $error_highlight_test_spot
+      assert_not_nil(spot)
+      assert_equal(2, spot[:first_lineno])
+      assert_equal("NotDefinedOperatorWrite", spot[:snippet][spot[:first_column]...spot[:last_column]])
+    ensure
+      $error_highlight_test_spot = nil
+    end
+  end
+
+  def test_nested_block_labels_treated_as_block_definitions
+    l1 = -> {
+      l2 = ->(x) { }
+      l2.call
+    }
+    lineno = __LINE__
+    begin
+      l1.call
+    rescue ArgumentError => exc
+    end
+
+    spot = ErrorHighlight.spot(exc, backtrace_location: exc.backtrace_locations.first, point_type: :name)
+    assert_not_nil(spot)
+    assert_equal(lineno - 3, spot[:first_lineno])
+    assert_equal(11, spot[:first_column])
+    assert_equal(13, spot[:last_column])
+    assert_equal("      l2 = ->(x) { }\n", spot[:snippet])
+  end
+
+  def not_a_blocker
+  end
+
+  def blocker(x)
+  end
+
+  def test_blocker_method_name_is_not_a_block_label
+    lineno = __LINE__
+    begin
+      not_a_blocker; blocker
+    rescue ArgumentError => exc
+    end
+
+    spot = ErrorHighlight.spot(exc, backtrace_location: exc.backtrace_locations[1], point_type: :name)
+    assert_not_nil(spot)
+    assert_equal(lineno + 2, spot[:first_lineno])
+    assert_equal("blocker", spot[:snippet][spot[:first_column]...spot[:last_column]])
+  end
+
+  def same_line_arity_foo(x)
+  end
+
+  def same_line_arity_bar(x)
+  end
+
+  def test_wrong_arity_caller_line_disambiguation
+    lineno = __LINE__
+    begin
+      same_line_arity_foo; same_line_arity_bar
+    rescue ArgumentError => exc
+    end
+
+    spot = ErrorHighlight.spot(exc, backtrace_location: exc.backtrace_locations[1], point_type: :name)
+    assert_not_nil(spot)
+    assert_equal(lineno + 2, spot[:first_lineno])
+    assert_equal("same_line_arity_foo", spot[:snippet][spot[:first_column]...spot[:last_column]])
+  end
+
 end

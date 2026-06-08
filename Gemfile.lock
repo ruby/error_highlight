@@ -1,0 +1,33 @@
+PATH
+  remote: .
+  specs:
+    error_highlight (0.7.1)
+      prism (>= 1.0.0)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    power_assert (3.0.1)
+    prism (1.9.0)
+    rake (13.4.2)
+    test-unit (3.7.5)
+      power_assert
+
+PLATFORMS
+  arm64-darwin-22
+  ruby
+
+DEPENDENCIES
+  error_highlight!
+  rake (~> 13.0)
+  test-unit (~> 3.0)
+
+CHECKSUMS
+  error_highlight (0.7.1)
+  power_assert (3.0.1)
+  prism (1.9.0)
+  rake (13.4.2)
+  test-unit (3.7.5)
+
+BUNDLED WITH
+  4.0.10

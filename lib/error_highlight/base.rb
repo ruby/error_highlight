@@ -1,3 +1,4 @@
+require "prism"
 require_relative "version"
 
 module ErrorHighlight
@@ -36,6 +37,7 @@ module ErrorHighlight
       exc = obj
       loc = opts[:backtrace_location]
       opts = { point_type: opts.fetch(:point_type, :name) }
+      opts[:name] = exc.name if NameError === exc
 
       unless loc
         case exc
@@ -46,32 +48,23 @@ module ErrorHighlight
         locs = exc.backtrace_locations
         return nil unless locs
 
-        loc = locs.first
+        loc = locs.find { |l| l.absolute_path && File.exist?(l.absolute_path) } || locs.first
         return nil unless loc
-
-        opts[:name] = exc.name if NameError === obj
       end
 
       return nil unless Thread::Backtrace::Location === loc
 
-      node =
-        begin
-          RubyVM::AbstractSyntaxTree.of(loc, keep_script_lines: true)
-        rescue RuntimeError => error
-          # RubyVM::AbstractSyntaxTree.of raises an error with a message that
-          # includes "prism" when the ISEQ was compiled with the prism compiler.
-          # In this case, we'll try to parse again with prism instead.
-          raise unless error.message.include?("prism")
-          prism_find(loc)
-        end
+      callee = ArgumentError === exc &&
+               same_backtrace_location?(loc, exc.backtrace_locations&.first) &&
+               opts[:point_type] == :name
 
-      Spotter.new(node, **opts).spot
+      Spotter.new(loc, **opts, callee: callee, backtrace_locations: exc.backtrace_locations, message: exc.message).spot
 
-    when RubyVM::AbstractSyntaxTree::Node, Prism::Node
+    when Prism::Node
       Spotter.new(obj, **opts).spot
 
     else
-      raise TypeError, "Exception is expected"
+      raise TypeError, "Exception or Prism::Node is expected"
     end
 
   rescue SyntaxError,
@@ -81,36 +74,38 @@ module ErrorHighlight
     return nil
   end
 
-  # Accepts a Thread::Backtrace::Location object and returns a Prism::Node
-  # corresponding to the backtrace location in the source code.
-  def self.prism_find(location)
-    require "prism"
-    return nil if Prism::VERSION < "1.0.0"
-
-    absolute_path = location.absolute_path
-    return unless absolute_path
-
-    node_id = RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location(location)
-    Prism.parse_file(absolute_path).value.breadth_first_search { |node| node.node_id == node_id }
+  def self.same_backtrace_location?(left, right)
+    return false unless left && right
+    left.path == right.path &&
+      left.lineno == right.lineno &&
+      left.label == right.label &&
+      left.base_label == right.base_label
   end
 
-  private_class_method :prism_find
+  private_class_method :same_backtrace_location?
 
   class Spotter
     class NonAscii < Exception; end
     private_constant :NonAscii
 
-    def initialize(node, point_type: :name, name: nil)
-      @node = node
+    def initialize(node_or_location, point_type: :name, name: nil, callee: false, backtrace_locations: nil, message: nil)
       @point_type = point_type
       @name = name
+      @message = message
+
+      if node_or_location.is_a?(Thread::Backtrace::Location)
+        @node = find_node(node_or_location, callee, backtrace_locations)
+      else
+        @node = node_or_location
+      end
 
       # Not-implemented-yet options
       @arg = nil # Specify the index or keyword at which argument caused the TypeError/ArgumentError
       @multiline = false # Allow multiline spot
 
       @fetch = -> (lineno, last_lineno = lineno) do
-        snippet = @node.script_lines[lineno - 1 .. last_lineno - 1].join("")
+        return "" unless @node
+        snippet = @node.location.source_lines[lineno - 1 .. last_lineno - 1].join("")
         snippet += "\n" unless snippet.end_with?("\n")
 
         # It requires some work to support Unicode (or multibyte) characters.
@@ -132,26 +127,6 @@ module ErrorHighlight
       # So we try to spot the sub-node that causes the NameError by using
       # `NameError#name`.
       case @node.type
-      when :COLON2
-        subnodes = []
-        node = @node
-        while node.type == :COLON2
-          node2, const = node.children
-          subnodes << node if const == @name
-          node = node2
-        end
-        if node.type == :CONST || node.type == :COLON3
-          if node.children.first == @name
-            subnodes << node
-          end
-
-          # If we found only one sub-node whose name is equal to @name, use it
-          return nil if subnodes.size != 1
-          @node = subnodes.first
-        else
-          # Do nothing; opt_getconstant_path is used only when the const base is
-          # NODE_CONST (`Foo`) or NODE_COLON3 (`::Foo`)
-        end
       when :constant_path_node
         subnodes = []
         node = @node
@@ -170,8 +145,7 @@ module ErrorHighlight
       end
 
       case @node.type
-
-      when :CALL, :QCALL
+      when :call_node
         case @point_type
         when :name
           spot_call_for_name
@@ -179,120 +153,66 @@ module ErrorHighlight
           spot_call_for_args
         end
 
-      when :ATTRASGN
-        case @point_type
-        when :name
-          spot_attrasgn_for_name
-        when :args
-          spot_attrasgn_for_args
-        end
-
-      when :OPCALL
-        case @point_type
-        when :name
-          spot_opcall_for_name
-        when :args
-          spot_opcall_for_args
-        end
-
-      when :FCALL
-        case @point_type
-        when :name
-          spot_fcall_for_name
-        when :args
-          spot_fcall_for_args
-        end
-
-      when :VCALL
-        spot_vcall
-
-      when :OP_ASGN1
-        case @point_type
-        when :name
-          spot_op_asgn1_for_name
-        when :args
-          spot_op_asgn1_for_args
-        end
-
-      when :OP_ASGN2
-        case @point_type
-        when :name
-          spot_op_asgn2_for_name
-        when :args
-          spot_op_asgn2_for_args
-        end
-
-      when :CONST
-        spot_vcall
-
-      when :COLON2
-        spot_colon2
-
-      when :COLON3
-        spot_vcall
-
-      when :OP_CDECL
-        spot_op_cdecl
-
-      when :DEFN
-        raise NotImplementedError if @point_type != :name
-        spot_defn
-
-      when :DEFS
-        raise NotImplementedError if @point_type != :name
-        spot_defs
-
-      when :LAMBDA
-        spot_lambda
-
-      when :ITER
-        spot_iter
-
-      when :call_node
-        case @point_type
-        when :name
-          prism_spot_call_for_name
-        when :args
-          prism_spot_call_for_args
-        end
-
       when :local_variable_operator_write_node
         case @point_type
         when :name
-          prism_spot_local_variable_operator_write_for_name
+          spot_write_for_name
         when :args
-          prism_spot_local_variable_operator_write_for_args
+          spot_write_for_args
+        end
+
+      when :instance_variable_operator_write_node,
+           :global_variable_operator_write_node,
+           :class_variable_operator_write_node
+        case @point_type
+        when :name
+          spot_variable_write_for_name
+        when :args
+          spot_write_for_args
         end
 
       when :call_operator_write_node
         case @point_type
         when :name
-          prism_spot_call_operator_write_for_name
+          spot_call_write_for_name
         when :args
-          prism_spot_call_operator_write_for_args
+          spot_call_write_for_args
         end
 
       when :index_operator_write_node
         case @point_type
         when :name
-          prism_spot_index_operator_write_for_name
+          spot_index_write_for_name
         when :args
-          prism_spot_index_operator_write_for_args
+          spot_index_write_for_args
         end
 
       when :constant_read_node
-        prism_spot_constant_read
+        spot_constant_read
 
       when :constant_path_node
-        prism_spot_constant_path
+        spot_constant_path
 
       when :constant_path_operator_write_node
-        prism_spot_constant_path_operator_write
+        case @point_type
+        when :name
+          spot_constant_path_write
+        when :args
+          spot_write_for_args
+        end
+
+      when :constant_operator_write_node
+        case @point_type
+        when :name
+          spot_constant_write
+        when :args
+          spot_write_for_args
+        end
 
       when :def_node
         case @point_type
         when :name
-          prism_spot_def_for_name
+          spot_def_for_name
         when :args
           raise NotImplementedError
         end
@@ -300,7 +220,7 @@ module ErrorHighlight
       when :lambda_node
         case @point_type
         when :name
-          prism_spot_lambda_for_name
+          spot_lambda_for_name
         when :args
           raise NotImplementedError
         end
@@ -308,7 +228,7 @@ module ErrorHighlight
       when :block_node
         case @point_type
         when :name
-          prism_spot_block_for_name
+          spot_block_for_name
         when :args
           raise NotImplementedError
         end
@@ -322,7 +242,7 @@ module ErrorHighlight
           last_lineno: @end_lineno,
           last_column: @end_column,
           snippet: @snippet,
-          script_lines: @node.script_lines,
+          script_lines: @node.location.source_lines,
         }
       else
         return nil
@@ -334,372 +254,307 @@ module ErrorHighlight
 
     private
 
-    # Example:
-    #   x.foo
-    #    ^^^^
-    #   x.foo(42)
-    #    ^^^^
-    #   x&.foo
-    #    ^^^^^
-    #   x[42]
-    #    ^^^^
-    #   x += 1
-    #     ^
-    def spot_call_for_name
-      nd_recv, mid, nd_args = @node.children
-      lineno = nd_recv.last_lineno
-      lines = @fetch[lineno, @node.last_lineno]
-      if mid == :[] && lines.match(/\G[\s)]*(\[(?:\s*\])?)/, nd_recv.last_column)
-        @beg_column = $~.begin(1)
-        @snippet = lines[/.*\n/]
-        @beg_lineno = @end_lineno = lineno
-        if nd_args
-          if nd_recv.last_lineno == nd_args.last_lineno && @snippet.match(/\s*\]/, nd_args.last_column)
-            @end_column = $~.end(0)
+    def find_node(location, callee, backtrace_locations = nil)
+      absolute_path = location.absolute_path
+      return nil unless absolute_path
+      return nil unless File.exist?(absolute_path)
+
+      result = Prism.parse_file(absolute_path)
+      return nil unless result.success?
+
+      candidates = backtrace_candidates(result.value, location.lineno)
+      return nil if candidates.empty?
+
+      # Resolve Ruby label if possible to get correct block depth when the first frame is a C method
+      label = resolved_backtrace_label(location, backtrace_locations)
+
+      # 1. Filter by block nesting depth and map to plain nodes
+      candidates = filter_to_current_block(candidates, label, callee)
+
+      if callee
+        candidates = find_definition(candidates, label)
+        if candidates.empty?
+          # Fallback to call site search (C method called from Ruby caller frame)
+          callee = false
+          candidates = backtrace_candidates(result.value, location.lineno)
+          candidates = filter_to_current_block(candidates, label, false)
+        end
+      end
+
+      return nil if candidates.empty?
+
+      # 2. Prefer candidates matching the backtrace label name
+      matched_label = candidates.select { |node| node_matches_label?(node, label) }
+      candidates = matched_label unless matched_label.empty?
+
+      # 3. Filter by NameError name if available
+      if @name
+        candidates = find_by_name(candidates, @name)
+      end
+
+      # 4. Filter by resolved call name from backtrace if available (to disambiguate multi-call lines)
+      unless callee
+        call_name = resolved_call_name(location, backtrace_locations)
+        if call_name
+          candidates = find_by_name(candidates, call_name)
+        end
+      end
+
+      # 5. Filter by call site (if caller frame)
+      unless callee
+        candidates = find_call_site(candidates)
+      end
+
+      candidates = find_by_message(candidates) if @point_type == :args
+
+      unique_best_candidate(candidates)
+    end
+
+    def resolved_backtrace_label(location, backtrace_locations)
+      return location.label unless backtrace_locations
+      return location.label if block_label?(location.label)
+      idx = backtrace_locations.find_index do |l|
+        l.path == location.path &&
+        l.lineno == location.lineno &&
+        l.label == location.label &&
+        l.base_label == location.base_label
+      end
+      return location.label unless idx
+
+      subsequent_locs = backtrace_locations[(idx + 1)..-1] || []
+      matching_loc = subsequent_locs.find do |l|
+        l.path == location.path &&
+        l.lineno == location.lineno &&
+        l.label != location.label
+      end
+
+      matching_loc ? matching_loc.label : location.label
+    end
+
+    def resolved_call_name(location, backtrace_locations)
+      return nil unless backtrace_locations
+      idx = backtrace_locations.find_index { |l| l == location }
+      idx ||= backtrace_locations.find_index do |l|
+        l.path == location.path &&
+        l.lineno == location.lineno &&
+        l.label == location.label &&
+        l.base_label == location.base_label
+      end
+      return nil unless idx
+
+      if idx > 0
+        callee_loc = backtrace_locations[idx - 1]
+        if callee_loc.base_label && !block_label?(callee_loc.label)
+          return callee_loc.base_label.to_sym
+        end
+      else
+        if location.base_label && !block_label?(location.label)
+          return location.base_label.to_sym
+        end
+      end
+      nil
+    end
+
+    def backtrace_candidates(root, lineno)
+      collect_candidates(root, lineno)
+    end
+
+    def collect_candidates(node, lineno, depth = 0, candidates = [])
+      return candidates unless node
+      if node.location.start_line <= lineno && lineno <= node.location.end_line
+        candidates << [node, depth] if supported_node?(node)
+
+        node.compact_child_nodes.each do |child|
+          next if node.is_a?(Prism::ConstantPathOperatorWriteNode) && child == node.target
+          next if node.is_a?(Prism::ConstantPathNode) && child == node.parent
+
+          next_depth = depth
+          if node.is_a?(Prism::BlockNode) || node.is_a?(Prism::LambdaNode)
+            next_depth += 1
+          elsif node.is_a?(Prism::DefNode)
+            next_depth = 0
+          end
+          collect_candidates(child, lineno, next_depth, candidates)
+        end
+      end
+      candidates
+    end
+
+    def supported_node?(node)
+      case node
+      when Prism::CallNode,
+           Prism::LocalVariableOperatorWriteNode,
+           Prism::InstanceVariableOperatorWriteNode,
+           Prism::GlobalVariableOperatorWriteNode,
+           Prism::ClassVariableOperatorWriteNode,
+           Prism::CallOperatorWriteNode,
+           Prism::IndexOperatorWriteNode,
+           Prism::ConstantReadNode,
+           Prism::ConstantPathNode,
+           Prism::ConstantPathOperatorWriteNode,
+           Prism::ConstantOperatorWriteNode,
+           Prism::DefNode,
+           Prism::LambdaNode,
+           Prism::BlockNode
+        true
+      else
+        false
+      end
+    end
+
+    def filter_to_current_block(candidates_with_depth, label, callee)
+      target_depth = label_depth(label)
+
+      candidates_with_depth.select do |node, depth|
+        if callee
+          if target_depth > 0
+            depth == target_depth - 1 && (node.is_a?(Prism::BlockNode) || node.is_a?(Prism::LambdaNode))
+          else
+            depth == 0 && node.is_a?(Prism::DefNode)
           end
         else
-          if lines.match(/\G[\s)]*?\[\s*\]/, nd_recv.last_column)
-            @end_column = $~.end(0)
-          end
+          depth >= target_depth
         end
-      elsif lines.match(/\G[\s)]*?(\&?\.)(\s*?)(#{ Regexp.quote(mid) }).*\n/, nd_recv.last_column)
-        lines = $` + $&
-        @beg_column = $~.begin($2.include?("\n") ? 3 : 1)
-        @end_column = $~.end(3)
-        if i = lines[..@beg_column].rindex("\n")
-          @beg_lineno = @end_lineno = lineno + lines[..@beg_column].count("\n")
-          @snippet = lines[i + 1..]
-          @beg_column -= i + 1
-          @end_column -= i + 1
+      end.map { |node, depth| node }
+    end
+
+    def label_depth(label)
+      return 0 unless label
+      if label == "block" || label.start_with?("block in ")
+        1
+      elsif label =~ /\Ablock \((\d+) levels\) in /
+        $1.to_i
+      else
+        0
+      end
+    end
+
+    def block_label?(label)
+      label_depth(label) > 0
+    end
+
+    def node_matches_label?(node, label)
+      return false unless label
+      method_name = label.split("#").last.split(".").last
+      case node
+      when Prism::CallNode
+        node.name.to_s == method_name
+      when Prism::CallOperatorWriteNode
+        node.read_name.to_s == method_name || node.write_name.to_s == method_name
+      when Prism::IndexOperatorWriteNode
+        method_name == "[]" || method_name == "[]="
+      else
+        false
+      end
+    end
+
+    def find_by_name(candidates, name)
+      matched = candidates.select { |node| node_matches_name?(node, name) }
+      matched.empty? ? candidates : matched
+    end
+
+    def node_matches_name?(node, name)
+      return false unless name
+      case node
+      when Prism::CallNode
+        node.name == name
+      when Prism::LocalVariableOperatorWriteNode
+        node.name == name
+      when Prism::InstanceVariableOperatorWriteNode,
+           Prism::GlobalVariableOperatorWriteNode,
+           Prism::ClassVariableOperatorWriteNode,
+           Prism::ConstantOperatorWriteNode
+        node.name == name || node.binary_operator == name
+      when Prism::CallOperatorWriteNode
+        node.read_name == name || node.write_name == name || node.binary_operator == name
+      when Prism::IndexOperatorWriteNode
+        name == :[] || name == :[]= || node.binary_operator == name
+      when Prism::ConstantReadNode
+        node.name == name
+      when Prism::ConstantPathNode
+        curr = node
+        while curr.is_a?(Prism::ConstantPathNode)
+          return true if curr.name == name
+          curr = curr.parent
+        end
+        curr.is_a?(Prism::ConstantReadNode) && curr.name == name
+      when Prism::ConstantPathOperatorWriteNode
+        node.target.name == name || node.binary_operator == name
+      when Prism::DefNode
+        node.name == name
+      else
+        false
+      end
+    end
+
+    def find_definition(candidates, label)
+      defs = candidates.select { |node| definition_node?(node) }
+      return [] if defs.empty?
+
+      if label
+        method_name = label.split("#").last.split(".").last
+        if label_depth(label) > 0
+          # We are in a block/lambda
+          blocks = defs.select { |node| node.is_a?(Prism::LambdaNode) || node.is_a?(Prism::BlockNode) }
+          return blocks
         else
-          @snippet = lines
-          @beg_lineno = @end_lineno = lineno
-        end
-      elsif mid.to_s =~ /\A\W+\z/ && lines.match(/\G\s*(#{ Regexp.quote(mid) })=.*\n/, nd_recv.last_column)
-        @snippet = $` + $&
-        @beg_lineno = @end_lineno = lineno
-        @beg_column = $~.begin(1)
-        @end_column = $~.end(1)
-      end
-    end
-
-    # Example:
-    #   x.foo(42)
-    #         ^^
-    #   x[42]
-    #     ^^
-    #   x += 1
-    #        ^
-    def spot_call_for_args
-      _nd_recv, _mid, nd_args = @node.children
-      if nd_args && nd_args.first_lineno == nd_args.last_lineno
-        fetch_line(nd_args.first_lineno)
-        @beg_column = nd_args.first_column
-        @end_column = nd_args.last_column
-      end
-      # TODO: support @arg
-    end
-
-    # Example:
-    #   x.foo = 1
-    #    ^^^^^^
-    #   x[42] = 1
-    #    ^^^^^^
-    def spot_attrasgn_for_name
-      nd_recv, mid, nd_args = @node.children
-      *nd_args, _nd_last_arg, _nil = nd_args.children
-      fetch_line(nd_recv.last_lineno)
-      if mid == :[]= && @snippet.match(/\G[\s)]*(\[)/, nd_recv.last_column)
-        @beg_column = $~.begin(1)
-        args_last_column = $~.end(0)
-        if nd_args.last && nd_recv.last_lineno == nd_args.last.last_lineno
-          args_last_column = nd_args.last.last_column
-        end
-        if @snippet.match(/[\s)]*\]\s*=/, args_last_column)
-          @end_column = $~.end(0)
-        end
-      elsif @snippet.match(/\G[\s)]*(\.\s*#{ Regexp.quote(mid.to_s.sub(/=\z/, "")) }\s*=)/, nd_recv.last_column)
-        @beg_column = $~.begin(1)
-        @end_column = $~.end(1)
-      end
-    end
-
-    # Example:
-    #   x.foo = 1
-    #           ^
-    #   x[42] = 1
-    #     ^^^^^^^
-    #   x[] = 1
-    #     ^^^^^
-    def spot_attrasgn_for_args
-      nd_recv, mid, nd_args = @node.children
-      fetch_line(nd_recv.last_lineno)
-      if mid == :[]= && @snippet.match(/\G[\s)]*\[/, nd_recv.last_column)
-        @beg_column = $~.end(0)
-        if nd_recv.last_lineno == nd_args.last_lineno
-          @end_column = nd_args.last_column
-        end
-      elsif nd_args && nd_args.first_lineno == nd_args.last_lineno
-        @beg_column = nd_args.first_column
-        @end_column = nd_args.last_column
-      end
-      # TODO: support @arg
-    end
-
-    # Example:
-    #   x + 1
-    #     ^
-    #   +x
-    #   ^
-    def spot_opcall_for_name
-      nd_recv, op, nd_arg = @node.children
-      fetch_line(nd_recv.last_lineno)
-      if nd_arg
-        # binary operator
-        if @snippet.match(/\G[\s)]*(#{ Regexp.quote(op) })/, nd_recv.last_column)
-          @beg_column = $~.begin(1)
-          @end_column = $~.end(1)
-        end
-      else
-        # unary operator
-        if @snippet[...nd_recv.first_column].match(/(#{ Regexp.quote(op.to_s.sub(/@\z/, "")) })\s*\(?\s*\z/)
-          @beg_column = $~.begin(1)
-          @end_column = $~.end(1)
+          # We are in a method definition
+          methods = defs.select { |node| node.is_a?(Prism::DefNode) && node.name.to_s == method_name }
+          return methods
         end
       end
+
+      defs
     end
 
-    # Example:
-    #   x + 1
-    #       ^
-    def spot_opcall_for_args
-      _nd_recv, _op, nd_arg = @node.children
-      if nd_arg && nd_arg.first_lineno == nd_arg.last_lineno
-        # binary operator
-        fetch_line(nd_arg.first_lineno)
-        @beg_column = nd_arg.first_column
-        @end_column = nd_arg.last_column
+    def definition_node?(node)
+      node.is_a?(Prism::DefNode) || node.is_a?(Prism::LambdaNode) || node.is_a?(Prism::BlockNode)
+    end
+
+    def find_call_site(candidates)
+      calls = candidates.select { |node| call_like_node?(node) }
+      calls.empty? ? candidates : calls
+    end
+
+    def find_by_message(candidates)
+      return candidates unless @message&.downcase&.include?("nil")
+
+      matched = candidates.select do |node|
+        location = args_location(node)
+        location && location.slice.match?(/\bnil\b/)
+      end
+
+      matched.empty? ? candidates : matched
+    end
+
+    def args_location(node)
+      case node
+      when Prism::CallNode
+        node.arguments&.location
+      when Prism::LocalVariableOperatorWriteNode,
+           Prism::InstanceVariableOperatorWriteNode,
+           Prism::GlobalVariableOperatorWriteNode,
+           Prism::ClassVariableOperatorWriteNode,
+           Prism::ConstantOperatorWriteNode,
+           Prism::CallOperatorWriteNode,
+           Prism::IndexOperatorWriteNode,
+           Prism::ConstantPathOperatorWriteNode
+        node.value.location
       end
     end
 
-    # Example:
-    #   foo(42)
-    #   ^^^
-    #   foo 42
-    #   ^^^
-    def spot_fcall_for_name
-      mid, _nd_args = @node.children
-      fetch_line(@node.first_lineno)
-      if @snippet.match(/(#{ Regexp.quote(mid) })/, @node.first_column)
-        @beg_column = $~.begin(1)
-        @end_column = $~.end(1)
-      end
+    def call_like_node?(node)
+      node.is_a?(Prism::CallNode) ||
+        node.is_a?(Prism::CallOperatorWriteNode) ||
+        node.is_a?(Prism::IndexOperatorWriteNode)
     end
 
-    # Example:
-    #   foo(42)
-    #       ^^
-    #   foo 42
-    #       ^^
-    def spot_fcall_for_args
-      _mid, nd_args = @node.children
-      if nd_args && nd_args.first_lineno == nd_args.last_lineno
-        fetch_line(nd_args.first_lineno)
-        @beg_column = nd_args.first_column
-        @end_column = nd_args.last_column
-      end
-    end
+    def unique_best_candidate(candidates)
+      return nil if candidates.empty?
+      return candidates.first if candidates.size == 1
 
-    # Example:
-    #   foo
-    #   ^^^
-    def spot_vcall
-      if @node.first_lineno == @node.last_lineno
-        fetch_line(@node.last_lineno)
-        @beg_column = @node.first_column
-        @end_column = @node.last_column
-      end
-    end
-
-    # Example:
-    #   x[1] += 42
-    #    ^^^    (for [])
-    #   x[1] += 42
-    #        ^  (for +)
-    #   x[1] += 42
-    #    ^^^^^^ (for []=)
-    def spot_op_asgn1_for_name
-      nd_recv, op, nd_args, _nd_rhs = @node.children
-      fetch_line(nd_recv.last_lineno)
-      if @snippet.match(/\G[\s)]*(\[)/, nd_recv.last_column)
-        bracket_beg_column = $~.begin(1)
-        args_last_column = $~.end(0)
-        if nd_args && nd_recv.last_lineno == nd_args.last_lineno
-          args_last_column = nd_args.last_column
-        end
-        if @snippet.match(/\s*\](\s*)(#{ Regexp.quote(op) })=()/, args_last_column)
-          case @name
-          when :[], :[]=
-            @beg_column = bracket_beg_column
-            @end_column = $~.begin(@name == :[] ? 1 : 3)
-          when op
-            @beg_column = $~.begin(2)
-            @end_column = $~.end(2)
-          end
-        end
-      end
-    end
-
-    # Example:
-    #   x[1] += 42
-    #     ^^^^^^^^
-    def spot_op_asgn1_for_args
-      nd_recv, mid, nd_args, nd_rhs = @node.children
-      fetch_line(nd_recv.last_lineno)
-      if mid == :[]= && @snippet.match(/\G\s*\[/, nd_recv.last_column)
-        @beg_column = $~.end(0)
-        if nd_recv.last_lineno == nd_rhs.last_lineno
-          @end_column = nd_rhs.last_column
-        end
-      elsif nd_args && nd_args.first_lineno == nd_rhs.last_lineno
-        @beg_column = nd_args.first_column
-        @end_column = nd_rhs.last_column
-      end
-      # TODO: support @arg
-    end
-
-    # Example:
-    #   x.foo += 42
-    #    ^^^     (for foo)
-    #   x.foo += 42
-    #         ^  (for +)
-    #   x.foo += 42
-    #    ^^^^^^^ (for foo=)
-    def spot_op_asgn2_for_name
-      nd_recv, _qcall, attr, op, _nd_rhs = @node.children
-      fetch_line(nd_recv.last_lineno)
-      if @snippet.match(/\G[\s)]*(\.)\s*#{ Regexp.quote(attr) }()\s*(#{ Regexp.quote(op) })(=)/, nd_recv.last_column)
-        case @name
-        when attr
-          @beg_column = $~.begin(1)
-          @end_column = $~.begin(2)
-        when op
-          @beg_column = $~.begin(3)
-          @end_column = $~.end(3)
-        when :"#{ attr }="
-          @beg_column = $~.begin(1)
-          @end_column = $~.end(4)
-        end
-      end
-    end
-
-    # Example:
-    #   x.foo += 42
-    #            ^^
-    def spot_op_asgn2_for_args
-      _nd_recv, _qcall, _attr, _op, nd_rhs = @node.children
-      if nd_rhs.first_lineno == nd_rhs.last_lineno
-        fetch_line(nd_rhs.first_lineno)
-        @beg_column = nd_rhs.first_column
-        @end_column = nd_rhs.last_column
-      end
-    end
-
-    # Example:
-    #   Foo::Bar
-    #      ^^^^^
-    def spot_colon2
-      nd_parent, const = @node.children
-      if nd_parent.last_lineno == @node.last_lineno
-        fetch_line(nd_parent.last_lineno)
-        @beg_column = nd_parent.last_column
-        @end_column = @node.last_column
-      else
-        fetch_line(@node.last_lineno)
-        if @snippet[...@node.last_column].match(/#{ Regexp.quote(const) }\z/)
-          @beg_lineno = @end_lineno = @node.last_lineno
-          @beg_column = $~.begin(0)
-          @end_column = $~.end(0)
-        end
-      end
-    end
-
-    # Example:
-    #   Foo::Bar += 1
-    #      ^^^^^^^^
-    def spot_op_cdecl
-      nd_lhs, op, _nd_rhs = @node.children
-      *nd_parent_lhs, _const = nd_lhs.children
-      if @name == op
-        fetch_line(nd_lhs.last_lineno)
-        if @snippet.match(/\G\s*(#{ Regexp.quote(op) })=/, nd_lhs.last_column)
-          @beg_column = $~.begin(1)
-          @end_column = $~.end(1)
-        end
-      else
-        # constant access error
-        @end_column = nd_lhs.last_column
-        if nd_parent_lhs.empty? # example: ::C += 1
-          if nd_lhs.first_lineno == nd_lhs.last_lineno
-            fetch_line(nd_lhs.last_lineno)
-            @beg_column = nd_lhs.first_column
-          end
-        else # example: Foo::Bar::C += 1
-          if nd_parent_lhs.last.last_lineno == nd_lhs.last_lineno
-            fetch_line(nd_lhs.last_lineno)
-            @beg_column = nd_parent_lhs.last.last_column
-          end
-        end
-      end
-    end
-
-    # Example:
-    #   def bar; end
-    #       ^^^
-    def spot_defn
-      mid, = @node.children
-      fetch_line(@node.first_lineno)
-      if @snippet.match(/\Gdef\s+(#{ Regexp.quote(mid) }\b)/, @node.first_column)
-        @beg_column = $~.begin(1)
-        @end_column = $~.end(1)
-      end
-    end
-
-    # Example:
-    #   def Foo.bar; end
-    #          ^^^^
-    def spot_defs
-      nd_recv, mid, = @node.children
-      fetch_line(nd_recv.last_lineno)
-      if @snippet.match(/\G\s*(\.\s*#{ Regexp.quote(mid) }\b)/, nd_recv.last_column)
-        @beg_column = $~.begin(1)
-        @end_column = $~.end(1)
-      end
-    end
-
-    # Example:
-    #   -> { ... }
-    #   ^^
-    def spot_lambda
-      fetch_line(@node.first_lineno)
-      if @snippet.match(/\G->/, @node.first_column)
-        @beg_column = $~.begin(0)
-        @end_column = $~.end(0)
-      end
-    end
-
-    # Example:
-    #   lambda { ... }
-    #          ^
-    #   define_method :foo do
-    #                      ^^
-    def spot_iter
-      _nd_fcall, nd_scope = @node.children
-      fetch_line(nd_scope.first_lineno)
-      if @snippet.match(/\G(?:do\b|\{)/, nd_scope.first_column)
-        @beg_column = $~.begin(0)
-        @end_column = $~.end(0)
-      end
+      slices = candidates.map { |node| node.location.slice }.uniq
+      slices.size == 1 ? candidates.first : nil
     end
 
     def fetch_line(lineno)
@@ -740,7 +595,7 @@ module ErrorHighlight
     #   ^^^
     #   foo
     #   ^^^
-    def prism_spot_call_for_name
+    def spot_call_for_name
       # Explicitly turn off foo.() syntax because error_highlight expects this
       # to not work.
       return nil if @node.name == :call && @node.message_loc.nil?
@@ -782,7 +637,7 @@ module ErrorHighlight
     #       ^^
     #   foo 42
     #       ^^
-    def prism_spot_call_for_args
+    def spot_call_for_args
       # Disallow highlighting arguments if there are no arguments.
       return if @node.arguments.nil?
 
@@ -800,15 +655,28 @@ module ErrorHighlight
     # Example:
     #   x += 1
     #     ^
-    def prism_spot_local_variable_operator_write_for_name
+    def spot_write_for_name
       prism_location(@node.binary_operator_loc.chop)
     end
 
     # Example:
     #   x += 1
     #        ^
-    def prism_spot_local_variable_operator_write_for_args
+    def spot_write_for_args
       prism_location(@node.value.location)
+    end
+
+    # Example:
+    #   @x += 1
+    #      ^
+    #   @@x += 1
+    #   ^^^
+    def spot_variable_write_for_name
+      if @name == @node.name
+        prism_location(@node.name_loc)
+      else
+        spot_write_for_name
+      end
     end
 
     # Example:
@@ -818,7 +686,7 @@ module ErrorHighlight
     #         ^  (for +)
     #   x.foo += 42
     #    ^^^^^^^ (for foo=)
-    def prism_spot_call_operator_write_for_name
+    def spot_call_write_for_name
       if !@name.start_with?(/[[:alpha:]_]/)
         prism_location(@node.binary_operator_loc.chop)
       else
@@ -835,7 +703,7 @@ module ErrorHighlight
     # Example:
     #   x.foo += 42
     #            ^^
-    def prism_spot_call_operator_write_for_args
+    def spot_call_write_for_args
       prism_location(@node.value.location)
     end
 
@@ -846,7 +714,7 @@ module ErrorHighlight
     #        ^  (for +)
     #   x[1] += 42
     #    ^^^^^^ (for []=)
-    def prism_spot_index_operator_write_for_name
+    def spot_index_write_for_name
       case @name
       when :[]
         prism_location(@node.opening_loc.join(@node.closing_loc))
@@ -864,7 +732,7 @@ module ErrorHighlight
     # Example:
     #   x[1] += 42
     #     ^^^^^^^^
-    def prism_spot_index_operator_write_for_args
+    def spot_index_write_for_args
       opening_loc =
         if @node.arguments.nil?
           @node.opening_loc.copy(start_offset: @node.opening_loc.start_offset + 1)
@@ -878,14 +746,14 @@ module ErrorHighlight
     # Example:
     #   Foo
     #   ^^^
-    def prism_spot_constant_read
+    def spot_constant_read
       prism_location(@node.location)
     end
 
     # Example:
     #   Foo::Bar
     #      ^^^^^
-    def prism_spot_constant_path
+    def spot_constant_path
       if @node.parent && @node.parent.location.end_line == @node.location.end_line
         fetch_line(@node.parent.location.end_line)
         prism_location(@node.delimiter_loc.join(@node.name_loc))
@@ -900,7 +768,7 @@ module ErrorHighlight
     # Example:
     #   Foo::Bar += 1
     #      ^^^^^^^^
-    def prism_spot_constant_path_operator_write
+    def spot_constant_path_write
       if @name == (target = @node.target).name
         prism_location(target.delimiter_loc.join(target.name_loc))
       else
@@ -909,9 +777,22 @@ module ErrorHighlight
     end
 
     # Example:
+    #   Foo += 1
+    #   ^^^
+    #   Foo += 1
+    #       ^
+    def spot_constant_write
+      if @name == @node.name
+        prism_location(@node.name_loc)
+      else
+        spot_write_for_name
+      end
+    end
+
+    # Example:
     #   def foo()
     #       ^^^
-    def prism_spot_def_for_name
+    def spot_def_for_name
       location = @node.name_loc
       location = @node.operator_loc.join(location) if @node.operator_loc
       prism_location(location)
@@ -920,7 +801,7 @@ module ErrorHighlight
     # Example:
     #   -> x, y { }
     #   ^^
-    def prism_spot_lambda_for_name
+    def spot_lambda_for_name
       prism_location(@node.operator_loc)
     end
 
@@ -929,7 +810,7 @@ module ErrorHighlight
     #          ^
     #   define_method :foo do |x, y|
     #                      ^
-    def prism_spot_block_for_name
+    def spot_block_for_name
       prism_location(@node.opening_loc)
     end
   end

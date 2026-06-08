@@ -37,13 +37,13 @@ module ErrorHighlight
     end
 
     def self.max_snippet_width
-      return if Ractor.current[:__error_highlight_max_snippet_width__] == :disabled
+      return if current_context[:__error_highlight_max_snippet_width__] == :disabled
 
-      Ractor.current[:__error_highlight_max_snippet_width__] ||= terminal_width
+      current_context[:__error_highlight_max_snippet_width__] ||= terminal_width
     end
 
     def self.max_snippet_width=(width)
-      return Ractor.current[:__error_highlight_max_snippet_width__] = :disabled if width.nil?
+      return current_context[:__error_highlight_max_snippet_width__] = :disabled if width.nil?
 
       width = width.to_i
 
@@ -52,7 +52,7 @@ module ErrorHighlight
         width = MIN_SNIPPET_WIDTH
       end
 
-      Ractor.current[:__error_highlight_max_snippet_width__] = width
+      current_context[:__error_highlight_max_snippet_width__] = width
     end
 
     def self.terminal_width
@@ -62,13 +62,23 @@ module ErrorHighlight
     rescue LoadError, NoMethodError, SystemCallError
       # skip truncation when terminal window size is unavailable
     end
+
+    def self.current_context
+      defined?(Ractor) ? Ractor.current : Thread.current
+    end
+    private_class_method :current_context
   end
 
   def self.formatter
-    Ractor.current[:__error_highlight_formatter__] || DefaultFormatter
+    current_context[:__error_highlight_formatter__] || DefaultFormatter
   end
 
   def self.formatter=(formatter)
-    Ractor.current[:__error_highlight_formatter__] = formatter
+    current_context[:__error_highlight_formatter__] = formatter
   end
+
+  def self.current_context
+    defined?(Ractor) ? Ractor.current : Thread.current
+  end
+  private_class_method :current_context
 end
