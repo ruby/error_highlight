@@ -72,5 +72,9 @@ module ErrorHighlight
     # This is because changing ArgumentError#message is highly incompatible.
     TypeError.prepend(CoreExt)
     ArgumentError.prepend(CoreExt)
+
+    # Ractor::IsolationError highlights the outer variable usage inside the block
+    # rather than the method call arguments.
+    Ractor::IsolationError.prepend(CoreExt)
   end
 end
