@@ -13,7 +13,7 @@ jobs:
     uses: ruby/actions/.github/workflows/ruby_versions.yml@master
     with:
       engine: cruby
-      min_version: 3.2
+      min_version: 3.4
 
   build:
     needs: ruby-versions
@@ -21,26 +21,23 @@ jobs:
     strategy:
       matrix:
         ruby: ${{ fromJson(needs.ruby-versions.outputs.versions) }}
+        parser: [parse.y, prism]
+        include:
+          - { ruby: 3.2, parser: 'parse.y' }
+          - { ruby: 3.3, parser: 'parse.y' }
     steps:
     - uses: actions/checkout@v7
     - uses: ruby/setup-ruby@v1
       with:
         ruby-version: ${{ matrix.ruby }}
-    - name: Bundle install
-      run: |
-        bundle install
-    - name: Run the test suite
-      run: |
-        RUBYOPT=--disable-error_highlight bundle exec rake TESTOPT=-v
-
-  prism:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v7
-    - uses: ruby/setup-ruby@v1
-      with:
-        ruby-version: head
         bundler-cache: true
-    - name: Run the test suite
+
+    # Ruby 3.2 does not have a --parser option
+    - name: Run the test suite (3.2+)
       run: |
-        RUBYOPT="--disable-error_highlight --parser=prism" bundle exec rake TESTOPT=-v
+        RUBYOPT="--disable-error_highlight --parser=${{ matrix.parser }}" bundle exec rake TESTOPT=-v
+      if: ${{ matrix.ruby != '3.2' }}
+    - name: Run the test suite (3.2)
+      run: |
+        RUBYOPT="--disable-error_highlight" bundle exec rake TESTOPT=-v
+      if: ${{ matrix.ruby == '3.2' }}
