@@ -1454,6 +1454,7 @@ undefined method `foo' for #{ NIL_RECV_MESSAGE }
     ->{}.call(1)
   rescue ArgumentError => exc
     MethodDefLocationSupported =
+      defined?(RubyVM::AbstractSyntaxTree) &&
       RubyVM::AbstractSyntaxTree.respond_to?(:node_id_for_backtrace_location) &&
       RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location(exc.backtrace_locations.first)
   end
@@ -1689,7 +1690,7 @@ wrong number of arguments (given 1, expected 2) (ArgumentError)
   end
 
   def test_spot_with_node
-    omit unless RubyVM::AbstractSyntaxTree.respond_to?(:node_id_for_backtrace_location)
+    omit unless defined?(RubyVM::AbstractSyntaxTree) && RubyVM::AbstractSyntaxTree.respond_to?(:node_id_for_backtrace_location)
 
     # We can't revisit instruction sequences to find node ids if the prism
     # compiler was used instead of the parse.y compiler. In that case, we'll
@@ -1844,6 +1845,34 @@ missing keywords: :shop_id, :param1 (ArgumentError)
     assert_nothing_raised do
       exc.full_message(highlight: false)
     end
+  end
+
+  def test_settings_without_ractor
+    # Ruby implementations without Ractor (e.g., JRuby) store the settings
+    # differently, so load error_highlight with Ractor hidden.
+    lib = File.expand_path("../..", ErrorHighlight.method(:spot).source_location[0])
+    script = <<~'RUBY'
+      Object.send(:remove_const, :Ractor) if defined?(Ractor)
+      require "error_highlight"
+
+      formatter = Object.new
+      ErrorHighlight.formatter = formatter
+      ErrorHighlight::DefaultFormatter.max_snippet_width = 40
+      p ErrorHighlight.formatter.equal?(formatter)
+      p Thread.new { [ErrorHighlight.formatter.equal?(formatter), ErrorHighlight::DefaultFormatter.max_snippet_width] }.value
+      ErrorHighlight.formatter = nil
+      ErrorHighlight::DefaultFormatter.max_snippet_width = nil
+      p ErrorHighlight.formatter, ErrorHighlight::DefaultFormatter.max_snippet_width
+    RUBY
+    # Ruby loads error_highlight at boot (before the script hides Ractor) unless
+    # gems are disabled, and RUBYOPT could re-enable it or load bundler/setup.
+    out = IO.popen({ "RUBYOPT" => nil }, [RbConfig.ruby, "--disable-gems", "-I", lib, "-e", script], err: [:child, :out], &:read)
+    assert_equal(<<~END, out)
+      true
+      [true, 40]
+      ErrorHighlight::DefaultFormatter
+      nil
+    END
   end
 
   private
