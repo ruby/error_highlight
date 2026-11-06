@@ -1864,7 +1864,9 @@ missing keywords: :shop_id, :param1 (ArgumentError)
       ErrorHighlight::DefaultFormatter.max_snippet_width = nil
       p ErrorHighlight.formatter, ErrorHighlight::DefaultFormatter.max_snippet_width
     RUBY
-    out = IO.popen([RbConfig.ruby, "-I", lib, "-e", script], err: [:child, :out], &:read)
+    # Ruby loads error_highlight at boot (before the script hides Ractor) unless
+    # gems are disabled, and RUBYOPT could re-enable it or load bundler/setup.
+    out = IO.popen({ "RUBYOPT" => nil }, [RbConfig.ruby, "--disable-gems", "-I", lib, "-e", script], err: [:child, :out], &:read)
     assert_equal(<<~END, out)
       true
       [true, 40]
