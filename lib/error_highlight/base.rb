@@ -58,11 +58,13 @@ module ErrorHighlight
 
       Spotter.new(node, **opts).spot
 
-    when RubyVM::AbstractSyntaxTree::Node, prism::Node
-      Spotter.new(obj, **opts).spot
-
     else
-      raise TypeError, "Exception is expected"
+      if (defined?(RubyVM::AbstractSyntaxTree::Node) && RubyVM::AbstractSyntaxTree::Node === obj) || # CRuby only
+         prism::Node === obj
+        Spotter.new(obj, **opts).spot
+      else
+        raise TypeError, "Exception is expected"
+      end
     end
 
   rescue SyntaxError,
@@ -76,6 +78,9 @@ module ErrorHighlight
     if loc.respond_to?(:syntax_tree)
       return loc.syntax_tree
     end
+
+    # Without Thread::Backtrace::Location#syntax_tree, nodes can only be located through RubyVM, which is CRuby-only
+    return nil unless defined?(RubyVM::AbstractSyntaxTree)
 
     begin
       RubyVM::AbstractSyntaxTree.of(loc, keep_script_lines: true)

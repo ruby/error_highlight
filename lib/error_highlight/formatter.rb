@@ -37,13 +37,13 @@ module ErrorHighlight
     end
 
     def self.max_snippet_width
-      return if Ractor.current[:__error_highlight_max_snippet_width__] == :disabled
+      return if LocalSettings[:max_snippet_width] == :disabled
 
-      Ractor.current[:__error_highlight_max_snippet_width__] ||= terminal_width
+      LocalSettings[:max_snippet_width] ||= terminal_width
     end
 
     def self.max_snippet_width=(width)
-      return Ractor.current[:__error_highlight_max_snippet_width__] = :disabled if width.nil?
+      return LocalSettings[:max_snippet_width] = :disabled if width.nil?
 
       width = width.to_i
 
@@ -52,7 +52,7 @@ module ErrorHighlight
         width = MIN_SNIPPET_WIDTH
       end
 
-      Ractor.current[:__error_highlight_max_snippet_width__] = width
+      LocalSettings[:max_snippet_width] = width
     end
 
     def self.terminal_width
@@ -64,11 +64,45 @@ module ErrorHighlight
     end
   end
 
+  # The formatter settings are Ractor-local. On Ruby implementations without
+  # Ractor (e.g., JRuby), they are module instance variables instead, which are
+  # likewise shared by all threads. Unlike Hash, which is not thread-safe on
+  # JRuby, concurrent instance variable updates are serialized
+  # (https://github.com/jruby/jruby/wiki/Concurrency-in-jruby), so threads
+  # formatting errors concurrently cannot corrupt the settings.
+  module LocalSettings
+    RACTOR_KEYS = {
+      formatter: :__error_highlight_formatter__,
+      max_snippet_width: :__error_highlight_max_snippet_width__,
+    }.freeze
+
+    if defined?(Ractor)
+      def self.[](name)
+        Ractor.current[RACTOR_KEYS.fetch(name)]
+      end
+
+      def self.[]=(name, value)
+        Ractor.current[RACTOR_KEYS.fetch(name)] = value
+      end
+    else
+      IVARS = RACTOR_KEYS.to_h { |name, _| [name, :"@#{ name }"] }.freeze
+
+      def self.[](name)
+        instance_variable_get(IVARS.fetch(name))
+      end
+
+      def self.[]=(name, value)
+        instance_variable_set(IVARS.fetch(name), value)
+      end
+    end
+  end
+  private_constant :LocalSettings
+
   def self.formatter
-    Ractor.current[:__error_highlight_formatter__] || DefaultFormatter
+    LocalSettings[:formatter] || DefaultFormatter
   end
 
   def self.formatter=(formatter)
-    Ractor.current[:__error_highlight_formatter__] = formatter
+    LocalSettings[:formatter] = formatter
   end
 end
